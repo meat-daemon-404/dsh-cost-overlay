@@ -23,8 +23,8 @@ import type { PriceTable } from './core/pricing.ts'
 import { COST_NS, priceField, priceFields, type CostOverlayConfig } from './core/types.ts'
 import { RECOMPUTE_PATH, type RecomputeResponse } from './core/protocol.ts'
 
-/** Services required by the host projection plugin. */
-export const inject = ['sessionProjections']
+/** Services required by the host projection plugin (webServer for the recompute route). */
+export const inject = ['sessionProjections', 'webServer']
 
 /** Settings namespace of the plugin (spelled identically on the browser half). */
 export const COST_SETTINGS_NAMESPACE = settingsNamespace(COST_NS)
@@ -156,30 +156,27 @@ export function apply(ctx: Context, config: Config = {}): void {
   })
 
   const disposers: Array<() => void> = []
-  if (ctx.webServer !== undefined) {
-    const route: WebRoute = {
-      kind: 'exact',
-      path: RECOMPUTE_PATH,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) {
-          writeJson(res, 403, { error: 'forbidden: loopback-only' })
-          return
-        }
-        if ((req.method ?? 'GET') !== 'POST') {
-          writeJson(res, 405, { error: `method not allowed: ${req.method}` })
-          return
-        }
-        rebuild()
-        const body: RecomputeResponse = { ok: true, registered: registeredCount }
-        writeJson(res, 200, body)
-      },
-    }
-    disposers.push(ctx.webServer.register(route))
+  const route: WebRoute = {
+    kind: 'exact',
+    path: RECOMPUTE_PATH,
+    handler: async (req, res) => {
+      if (!isLoopbackRequest(req)) {
+        writeJson(res, 403, { error: 'forbidden: loopback-only' })
+        return
+      }
+      if ((req.method ?? 'GET') !== 'POST') {
+        writeJson(res, 405, { error: `method not allowed: ${req.method}` })
+        return
+      }
+      rebuild()
+      const body: RecomputeResponse = { ok: true, registered: registeredCount }
+      writeJson(res, 200, body)
+    },
   }
+  disposers.push(ctx.webServer.register(route))
   ctx.effect(() => () => {
     for (const dispose of disposers.splice(0)) dispose()
   }, 'dsh-cost-overlay: host route')
-
   rebuild()
 }
 

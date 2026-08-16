@@ -1,7 +1,7 @@
 {
   "name": "dsh-cost-overlay",
   "description": "DeepSeek API cost overlay for the dsh web GUI: a floating bar at the top center of the screen showing the current model's unit prices (yuan per million tokens, peak/off-peak aware) and the current session's accumulated cost, computed from real token usage with cache-hit pricing. Hot-pluggable - mounted via the profile node_modules + a bundle row, no dsh source changes.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "packageManager": "pnpm@11.7.0",
   "engines": {
