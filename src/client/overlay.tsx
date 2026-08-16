@@ -9,8 +9,8 @@
  * round-trip.
  */
 
-import { useEffect, useMemo, useState } from 'react'
-import type { CSSProperties, ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls the ui-conversation SlotMap merge (the header utilities
@@ -32,6 +32,42 @@ const TICK_MS = 30_000
 
 /** How long the "recomputed" feedback stays visible. */
 const RECOMPUTED_MS = 2_500
+
+/** localStorage key for the user-dragged overlay position. */
+const POS_KEY = 'dsh-cost-overlay.pos'
+
+/** Pointer movement (px) above which a press is a drag, not a click. */
+const DRAG_THRESHOLD_PX = 4
+
+/** Minimum inset from the viewport edges while dragging. */
+const EDGE_INSET_PX = 8
+
+/** A user-positioned overlay origin (viewport px, top-left). */
+interface OverlayPos {
+  x: number
+  y: number
+}
+
+/** Read a previously saved position; null keeps the default top-center seat. */
+function readSavedPos(): OverlayPos | null {
+  try {
+    const raw = localStorage.getItem(POS_KEY)
+    if (raw === null) return null
+    const parsed = JSON.parse(raw) as OverlayPos
+    if (typeof parsed.x === 'number' && typeof parsed.y === 'number'
+      && Number.isFinite(parsed.x) && Number.isFinite(parsed.y)) {
+      return parsed
+    }
+  } catch {
+    // Corrupt or unavailable storage: fall back to the default seat.
+  }
+  return null
+}
+
+/** The default top-center seat of the bar (measured at drag start). */
+function defaultSeat(barWidth: number): OverlayPos {
+  return { x: Math.max(EDGE_INSET_PX, Math.round((window.innerWidth - barWidth) / 2)), y: 10 }
+}
 
 const OVERLAY_STYLE: CSSProperties = {
   position: 'fixed',
@@ -117,6 +153,21 @@ export function CostOverlaySlot(props: CostOverlaySlotProps) {
   const [now, setNow] = useState(() => Date.now())
   const [expanded, setExpanded] = useState(false)
   const [recomputeState, setRecomputeState] = useState<'idle' | 'busy' | 'done' | 'failed'>('idle')
+  const [pos, setPos] = useState<OverlayPos | null>(() => readSavedPos())
+  const [dragging, setDragging] = useState(false)
+
+  // Live drag session: pointer id, press origin, seat origin, and the moved flag.
+  const dragRef = useRef<{
+    pointerId: number
+    startX: number
+    startY: number
+    originX: number
+    originY: number
+    moved: boolean
+  } | null>(null)
+  // Consumed by onClick to keep a drag from toggling the panel.
+  const suppressClickRef = useRef(false)
+  const barRef = useRef<HTMLDivElement | null>(null)
 
   // The period ticker: peak/valley unit prices flip at the hour boundary.
   useEffect(() => {
@@ -141,6 +192,75 @@ export function CostOverlaySlot(props: CostOverlaySlotProps) {
   if (view === null) return null
   const { model, period, unit, value: data } = view
 
+  const onBarPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0) return
+    const width = barRef.current?.offsetWidth ?? 0
+    const seat = pos ?? defaultSeat(width)
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: seat.x,
+      originY: seat.y,
+      moved: false,
+    }
+    setDragging(true)
+    event.currentTarget.setPointerCapture(event.pointerId)
+    event.preventDefault()
+  }
+
+  const onBarPointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const drag = dragRef.current
+    if (drag === null || event.pointerId !== drag.pointerId) return
+    const dx = event.clientX - drag.startX
+    const dy = event.clientY - drag.startY
+    if (!drag.moved && Math.abs(dx) + Math.abs(dy) > DRAG_THRESHOLD_PX) drag.moved = true
+    if (!drag.moved) return
+    const maxX = Math.max(EDGE_INSET_PX, window.innerWidth - EDGE_INSET_PX)
+    const maxY = Math.max(EDGE_INSET_PX, window.innerHeight - EDGE_INSET_PX)
+    setPos({
+      x: Math.min(Math.max(EDGE_INSET_PX, drag.originX + dx), maxX),
+      y: Math.min(Math.max(EDGE_INSET_PX, drag.originY + dy), maxY),
+    })
+  }
+
+  const onBarPointerUp = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const drag = dragRef.current
+    if (drag === null || event.pointerId !== drag.pointerId) return
+    dragRef.current = null
+    setDragging(false)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    if (drag.moved) {
+      // The drag ended; persist the last position. Read it from state via a
+      // functional update so the saved value matches what was rendered.
+      suppressClickRef.current = true
+      setPos(previous => {
+        if (previous !== null) {
+          try {
+            localStorage.setItem(POS_KEY, JSON.stringify(previous))
+          } catch {
+            // Storage unavailable: the position just stays in-memory.
+          }
+        }
+        return previous
+      })
+    }
+  }
+
+  const onBarClick = (): void => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false
+      return
+    }
+    setExpanded(prev => !prev)
+  }
+
+  const containerStyle: CSSProperties = pos === null
+    ? OVERLAY_STYLE
+    : { ...OVERLAY_STYLE, top: `${pos.y}px`, left: `${pos.x}px`, transform: 'none' }
+
   const runRecompute = async (): Promise<void> => {
     setRecomputeState('busy')
     try {
@@ -155,12 +275,21 @@ export function CostOverlaySlot(props: CostOverlaySlotProps) {
   const t: Record<CostKey, string> = ZH_DICT
 
   return (
-    <div style={OVERLAY_STYLE}>
+    <div style={containerStyle}>
       <div
+        ref={barRef}
         role="button"
         aria-expanded={expanded}
-        style={BAR_STYLE}
-        onClick={() => setExpanded(prev => !prev)}
+        title={t['overlay.dragHint']}
+        style={{
+          ...BAR_STYLE,
+          cursor: dragging ? 'grabbing' : 'grab',
+          touchAction: 'none',
+        }}
+        onPointerDown={onBarPointerDown}
+        onPointerMove={onBarPointerMove}
+        onPointerUp={onBarPointerUp}
+        onClick={onBarClick}
       >
         {period !== undefined && (
           <span style={PERIOD_STYLE[period]}>{periodLabel(period, t)}</span>
@@ -265,6 +394,30 @@ export function CostOverlaySlot(props: CostOverlaySlotProps) {
             >
               {recomputeState === 'busy' ? '…' : t['overlay.detail.recompute']}
             </button>
+            {pos !== null && (
+              <button
+                type="button"
+                onClick={() => {
+                  setPos(null)
+                  try {
+                    localStorage.removeItem(POS_KEY)
+                  } catch {
+                    // Storage unavailable: resetting in-memory is enough.
+                  }
+                }}
+                style={{
+                  padding: '4px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--dsw-alias-border-l2, rgba(255,255,255,0.16))',
+                  background: 'transparent',
+                  color: 'var(--dsw-alias-label-secondary, #9aa0ac)',
+                  fontSize: '12px',
+                  cursor: 'pointer',
+                }}
+              >
+                {t['overlay.detail.resetPos']}
+              </button>
+            )}
           </div>
         </div>
       )}
