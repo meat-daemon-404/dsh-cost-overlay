@@ -122,6 +122,16 @@ export function costOf(cells: PriceCells, uncached: number, cacheRead: number, o
   return (uncached * cells.miss + cacheRead * cells.hit + output * cells.out) / 1_000_000
 }
 
+/**
+ * Amount saved in yuan thanks to DeepSeek Context Caching (`cacheRead` billed
+ * at `cells.hit` instead of `cells.miss`).
+ */
+export function cacheSavingsOf(cells: PriceCells, cacheRead: number): number {
+  if (cacheRead <= 0) return 0
+  const delta = Math.max(0, cells.miss - cells.hit)
+  return (cacheRead * delta) / 1_000_000
+}
+
 /** Cache-hit ratio over billed input tokens, or null when there is no input. */
 export function hitRateOf(uncached: number, cacheRead: number): number | null {
   const input = uncached + cacheRead
@@ -146,4 +156,43 @@ export function formatUnit(value: number): string {
   if (abs >= 1) return String(Math.round(value * 1000) / 1000)
   if (abs >= 0.01) return String(Math.round(value * 100) / 100)
   return String(value)
+}
+
+/** Render a shareable Markdown cost accounting summary from a session snapshot. */
+export function exportCostMarkdown(summary: {
+  readonly model: string | null
+  readonly period: PricePeriod | null
+  readonly totals: { readonly uncached: number; readonly read: number; readonly out: number }
+  readonly cost: number
+  readonly hitRate: number | null
+  readonly byModel?: ReadonlyArray<{
+    readonly model: string
+    readonly uncached: number
+    readonly read: number
+    readonly out: number
+    readonly cost: number
+  }>
+}): string {
+  const hitPct = summary.hitRate === null ? '-' : `${Math.round(summary.hitRate * 100)}%`
+  const lines: string[] = [
+    '### 💰 DeepSeek Session Cost Report (`dsh-cost-overlay`)',
+    '',
+    `- **Active Model**: \`${summary.model ?? '-'}\` (\`${summary.period ?? '-'}\`)`,
+    `- **Input Tokens**: \`${summary.totals.uncached.toLocaleString('en-US')}\` uncached / \`${summary.totals.read.toLocaleString('en-US')}\` cache-hit (**${hitPct}** hit rate)`,
+    `- **Output Tokens**: \`${summary.totals.out.toLocaleString('en-US')}\``,
+    `- **Accumulated Cost**: **¥${formatYuan(summary.cost)}**`,
+  ]
+  if (summary.byModel && summary.byModel.length > 0) {
+    lines.push(
+      '',
+      '| Model | Uncached Input | Cache-Hit Input | Output | Cost (CNY) |',
+      '| :--- | ---: | ---: | ---: | ---: |',
+      ...summary.byModel.map(
+        (r) =>
+          `| \`${r.model}\` | ${r.uncached.toLocaleString('en-US')} | ${r.read.toLocaleString('en-US')} | ${r.out.toLocaleString('en-US')} | **¥${formatYuan(r.cost)}** |`,
+      ),
+    )
+  }
+  lines.push('')
+  return lines.join('\n')
 }

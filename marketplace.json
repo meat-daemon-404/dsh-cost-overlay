@@ -1,0 +1,26 @@
+{
+  "name": "dsh-cost-overlay-marketplace",
+  "plugins": [
+    {
+      "name": "dsh-cost-overlay",
+      "source": "./",
+      "version": "0.2.0",
+      "displayName": "DeepSeek Cost Overlay",
+      "displayName_i18n": {
+        "zh-CN": "DeepSeek 费用悬浮条"
+      },
+      "description": "Draggable top-center DeepSeek API cost & cache-savings overlay for the DSH Web GUI with peak/off-peak pricing and per-model breakdown.",
+      "description_i18n": {
+        "zh-CN": "DSH Web GUI 可拖动顶部费用悬浮条：实时展示峰谷时段单价、缓存命中率、缓存省钱金额与按模型分账明细。"
+      },
+      "category": "developer-tools",
+      "keywords": [
+        "deepseek",
+        "dsh",
+        "dsh-plugin",
+        "cost-overlay",
+        "token-meter"
+      ]
+    }
+  ]
+}

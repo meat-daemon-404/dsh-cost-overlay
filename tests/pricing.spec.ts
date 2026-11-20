@@ -3,7 +3,9 @@ import {
   DEFAULT_PEAK_WINDOWS,
   DEFAULT_PRICE_TABLE,
   DEFAULT_REGIME_SWITCH_AT,
+  cacheSavingsOf,
   costOf,
+  exportCostMarkdown,
   formatUnit,
   formatYuan,
   hitRateOf,
@@ -70,10 +72,9 @@ describe('periodOf', () => {
   })
 })
 
-describe('costOf', () => {
+describe('costOf & cacheSavingsOf', () => {
   it('bills the three disjoint buckets at their own cells', () => {
     const cells = { hit: 0.05, miss: 1.5, out: 4.5 }
-    // 1M uncached input * 1.5 + 1M cached * 0.05 + 1M output * 4.5 = 6.05
     expect(costOf(cells, 1_000_000, 1_000_000, 1_000_000)).toBeCloseTo(6.05, 6)
   })
 
@@ -84,15 +85,35 @@ describe('costOf', () => {
   it('scales with token counts', () => {
     expect(costOf({ hit: 0.1, miss: 3, out: 9 }, 100_000, 200_000, 50_000)).toBeCloseTo(0.3 + 0.02 + 0.45, 6)
   })
+
+  it('computes exact yuan saved by context caching', () => {
+    const cells = { hit: 0.1, miss: 3.0, out: 9.0 }
+    expect(cacheSavingsOf(cells, 1_000_000)).toBeCloseTo(2.9, 6)
+    expect(cacheSavingsOf(cells, 0)).toBe(0)
+  })
 })
 
-describe('hitRateOf', () => {
+describe('hitRateOf & exportCostMarkdown', () => {
   it('is the cache-read share of billed input', () => {
     expect(hitRateOf(100, 300)).toBeCloseTo(0.75, 6)
   })
 
   it('is null when there is no input', () => {
     expect(hitRateOf(0, 0)).toBeNull()
+  })
+
+  it('formats a Markdown session cost report table', () => {
+    const md = exportCostMarkdown({
+      model: 'deepseek-v4-flash',
+      period: 'peak',
+      totals: { uncached: 200_000, read: 800_000, out: 50_000 },
+      cost: 1.13,
+      hitRate: 0.8,
+      byModel: [{ model: 'deepseek-v4-flash', uncached: 200_000, read: 800_000, out: 50_000, cost: 1.13 }],
+    })
+    expect(md).toContain('DeepSeek Session Cost Report')
+    expect(md).toContain('80%')
+    expect(md).toContain('¥1.13')
   })
 })
 
