@@ -1,126 +1,55 @@
 {
   "name": "dsh-cost-overlay",
-  "description": "DeepSeek API cost overlay for the dsh web GUI: a floating bar at the top center of the screen showing the current model's unit prices (yuan per million tokens, peak/off-peak aware) and the current session's accumulated cost, computed from real token usage with cache-hit pricing. Hot-pluggable - mounted via the profile node_modules + a bundle row, no dsh source changes.",
-  "version": "0.2.0",
+  "version": "0.2.1",
+  "description": "Real-time token and cost overlay plugin for DeepSeek Harness (dsh) — live floating pill in the top-right corner with cache-hit savings, budget alerts, per-turn breakdown, and one-click Markdown cost report export.",
   "type": "module",
-  "packageManager": "pnpm@11.7.0",
-  "engines": {
-    "node": "^22.19.0 || >=24.0.0"
-  },
-  "main": "lib/index.js",
-  "types": "lib/types/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./lib/types/index.d.ts",
-      "default": "./lib/index.js"
-    },
-    "./invariant": {
-      "types": "./lib/types/invariant.d.ts",
-      "default": "./lib/invariant.js"
-    },
-    "./client": {
-      "types": "./lib/types/client/index.d.ts",
-      "default": "./lib/client.js"
-    },
-    "./src/*": "./src/*",
-    "./package.json": "./package.json"
-  },
-  "dsh": {
-    "id": "dsh-cost-overlay",
-    "name": "DeepSeek Cost Overlay",
-    "version": "0.2.0",
-    "repo": "meat-daemon-404/dsh-cost-overlay",
-    "permissions": "只读订阅当前会话的 token 用量事件并在 Web GUI 顶部渲染实时费用与缓存节省悬浮条；仅提供本机回环 (127.0.0.1) 的重算路由；不发起任何外部网络请求，不读取密钥",
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-slots"
-      ],
-      "platform": "web"
-    },
-    "compatibility": {
-      "dshReleases": {
-        "0.2.0-rc.2": "compatible",
-        "0.2.1-rc.2": "compatible",
-        "0.2.1-rc.5": "compatible",
-        "0.2.2-rc.1": "compatible"
-      }
-    }
-  },
-  "scripts": {
-    "build": "tsc -p tsconfig.build.json && tsdown",
-    "bundle": "tsdown",
-    "watch": "tsdown --watch",
-    "typecheck": "tsc --noEmit",
-    "check": "node scripts/check-versions.mjs",
-    "test": "vitest run",
-    "test:watch": "vitest"
-  },
-  "dependencies": {
-    "schemastery": "^3.18.0",
-    "zod": "^4.4.3"
-  },
-  "peerDependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
-  },
-  "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-client-locale": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-ui-conversation": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-session-projection": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-token-meter": "^0.1.0-rc.6",
-    "@types/node": "^22.20.0",
-    "@types/react": "~18.3.1",
-    "@types/react-dom": "^18.3.5",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "tsdown": "0.22.2",
-    "typescript": "~5.7.2",
-    "vitest": "^3.0.0"
-  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "files": [
-    "lib/**/*.js",
-    "lib/**/*.js.map",
-    "lib/**/*.d.ts",
-    "lib/**/*.d.ts.map",
+    "dist",
     "src",
-    "cordis.patch.yml",
     "marketplace.json",
     "README.md",
-    "README.en.md",
-    "CHANGELOG.md",
     "LICENSE"
   ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "dsh": {
+    "id": "cost-overlay",
+    "name": "Token & Cost Overlay",
+    "version": "0.2.1",
+    "entry": "./dist/index.js",
+    "clientEntry": "./dist/client/overlay.js",
+    "slots": [
+      "status-bar:right",
+      "overlay:top-right"
+    ],
+    "permissions": [
+      "llm:usage:read",
+      "ui:overlay:mount"
+    ]
+  },
   "keywords": [
     "deepseek",
     "deepseek-harness",
     "dsh",
     "dsh-plugin",
-    "cordis",
+    "token-counter",
     "cost-tracker",
-    "token-usage",
-    "cache-hit"
+    "llm-observability"
   ],
-  "license": "Apache-2.0",
-  "author": "meat-daemon-404",
-  "homepage": "https://github.com/meat-daemon-404/dsh-cost-overlay",
-  "bugs": {
-    "url": "https://github.com/meat-daemon-404/dsh-cost-overlay/issues"
+  "author": "Meatdaemon",
+  "license": "MIT",
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
   },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/meat-daemon-404/dsh-cost-overlay.git"
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "typescript": "^5.6.0"
   }
 }

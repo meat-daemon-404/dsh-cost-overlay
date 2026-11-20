@@ -1,497 +1,504 @@
-/**
- * The top-center cost overlay, registered into the session header's additive
- * `conversation.session.header.utilities` seat. The seat renders inside the
- * session header, and the component pins itself to the top-center of the
- * viewport with `position: fixed` — visually a frame-wide overlay, fed by the
- * framework's session standard kit (`useProjection`) so it re-renders on
- * projection frames and session switches for free. A local clock ticker keeps
- * the peak/valley unit prices fresh across hour boundaries without any host
- * round-trip.
- */
+import React, { useState, useEffect, useCallback } from 'react';
+import { getTranslations, type Locale } from './locales.ts';
+import {
+  formatTokens,
+  formatYuan,
+  cacheHitRateOf,
+  cacheSavingsOf,
+  budgetUtilizationOf,
+  exportCostMarkdown,
+  type CostSnapshot,
+  type TurnUsage,
+} from '../core/pricing.ts';
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-// Type-only: pulls the ui-conversation SlotMap merge (the header utilities
-// seat) and the locale Context merge.
-import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
-import type {} from '@deepseek-ai/dsh-client-locale/client'
-import type {} from '@deepseek-ai/dsh-client-ui-slots'
-import { formatUnit, formatYuan, periodOf } from '../core/pricing.ts'
-import type { PricePeriod } from '../core/pricing.ts'
-import { RECOMPUTE_PATH } from '../core/protocol.ts'
-import type { DeepseekCostProjection } from '../core/types.ts'
-import { zh as ZH_DICT, type CostKey } from './locales.ts'
-
-/** The projection key this overlay reads. */
-const COST_PROJECTION_KEY = 'deepseekCost'
-
-/** Re-render cadence for the period ticker (also keeps the clock honest). */
-const TICK_MS = 30_000
-
-/** How long the "recomputed" feedback stays visible. */
-const RECOMPUTED_MS = 2_500
-
-/** localStorage key for the user-dragged overlay position. */
-const POS_KEY = 'dsh-cost-overlay.pos'
-
-/** Pointer movement (px) above which a press is a drag, not a click. */
-const DRAG_THRESHOLD_PX = 4
-
-/** Minimum inset from the viewport edges while dragging. */
-const EDGE_INSET_PX = 8
-
-/** A user-positioned overlay origin (viewport px, top-left). */
-interface OverlayPos {
-  x: number
-  y: number
+declare global {
+  interface Window {
+    __DSH_COST_BRIDGE__?: {
+      subscribe(cb: (snap: CostSnapshot) => void): () => void;
+      getSnapshot(): CostSnapshot | null;
+      reset(): void;
+      setBudget(yuan: number): void;
+      setLocale?(locale: Locale): void;
+    };
+  }
 }
 
-/** Read a previously saved position; null keeps the default top-center seat. */
-function readSavedPos(): OverlayPos | null {
+const EMPTY_SNAPSHOT: CostSnapshot = {
+  sessionId: 'init',
+  startedAt: Date.now(),
+  totalPromptTokens: 0,
+  totalCacheHitTokens: 0,
+  totalCacheMissTokens: 0,
+  totalCompletionTokens: 0,
+  totalTokens: 0,
+  totalCostYuan: 0,
+  turnCount: 0,
+  budgetYuan: 5.0,
+  warnThreshold: 0.8,
+  turns: [],
+  byModel: {},
+};
+
+const STORAGE_POS_KEY = 'dsh-cost-overlay:pos';
+const STORAGE_EXPANDED_KEY = 'dsh-cost-overlay:expanded';
+
+interface CornerPos {
+  right: number;
+  top: number;
+}
+
+function loadSavedPos(): CornerPos {
   try {
-    const raw = localStorage.getItem(POS_KEY)
-    if (raw === null) return null
-    const parsed = JSON.parse(raw) as OverlayPos
-    if (typeof parsed.x === 'number' && typeof parsed.y === 'number'
-      && Number.isFinite(parsed.x) && Number.isFinite(parsed.y)) {
-      return parsed
+    const raw = localStorage.getItem(STORAGE_POS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.right === 'number' && typeof parsed.top === 'number') {
+        return parsed;
+      }
     }
   } catch {
-    // Corrupt or unavailable storage: fall back to the default seat.
+    // ignore storage errors
   }
-  return null
+  return { right: 16, top: 12 };
 }
 
-/** The default top-center seat of the bar (measured at drag start). */
-function defaultSeat(barWidth: number): OverlayPos {
-  return { x: Math.max(EDGE_INSET_PX, Math.round((window.innerWidth - barWidth) / 2)), y: 10 }
-}
-
-const OVERLAY_STYLE: CSSProperties = {
-  position: 'fixed',
-  top: '10px',
-  left: '50%',
-  transform: 'translateX(-50%)',
-  zIndex: 2147483000,
-  boxSizing: 'border-box',
-  fontFamily: 'var(--dsw-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif)',
-}
-
-const BAR_STYLE: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: '8px',
-  padding: '6px 12px',
-  borderRadius: '999px',
-  background: 'var(--dsw-alias-bg-overlay, rgba(24, 26, 32, 0.94))',
-  border: '1px solid var(--dsw-alias-border-l2, rgba(255, 255, 255, 0.14))',
-  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.28)',
-  cursor: 'pointer',
-  fontSize: '12px',
-  lineHeight: '18px',
-  color: 'var(--dsw-alias-label-primary, #e8eaed)',
-  whiteSpace: 'nowrap',
-  userSelect: 'none',
-}
-
-const PERIOD_STYLE: Record<PricePeriod | 'none', CSSProperties> = {
-  peak: {
-    padding: '1px 8px',
-    borderRadius: '999px',
-    fontSize: '11px',
-    fontWeight: 600,
-    color: 'var(--dsw-alias-state-warn-primary, #ff8f3d)',
-    background: 'var(--dsw-alias-state-warn-tertiary, rgba(255, 143, 61, 0.16))',
-  },
-  offpeak: {
-    padding: '1px 8px',
-    borderRadius: '999px',
-    fontSize: '11px',
-    fontWeight: 600,
-    color: 'var(--dsw-alias-state-success-primary, #34c77b)',
-    background: 'var(--dsw-alias-state-success-tertiary, rgba(52, 199, 123, 0.16))',
-  },
-  flat: {
-    padding: '1px 8px',
-    borderRadius: '999px',
-    fontSize: '11px',
-    fontWeight: 600,
-    color: 'var(--dsw-alias-label-secondary, #9aa0ac)',
-    background: 'var(--dsw-alias-bg-layer-2, rgba(255, 255, 255, 0.08))',
-  },
-  none: {},
-}
-
-const TEXT_SECONDARY: CSSProperties = { color: 'var(--dsw-alias-label-secondary, #9aa0ac)' }
-const TEXT_TERTIARY: CSSProperties = { color: 'var(--dsw-alias-label-tertiary, #6b7280)' }
-const NUM = { fontVariantNumeric: 'tabular-nums' as const }
-
-/** The full props the slot renderer binds (session kit + owner share). */
-export type CostOverlaySlotProps = PropsRuntime<'conversation.session.header.utilities'>
-
-/** Format a token count with thousands separators. */
-export function formatTokens(value: number): string {
-  return value.toLocaleString('en-US')
-}
-
-/** The period label for one period key. */
-function periodLabel(period: PricePeriod | undefined, t: Record<CostKey, string>): string {
-  if (period === 'peak') return t['overlay.peak']
-  if (period === 'offpeak') return t['overlay.offpeak']
-  if (period === 'flat') return t['overlay.flat']
-  return '-'
-}
-
-/**
- * The compact bar plus the click-to-expand detail panel.
- * @param props - the session standard kit (useProjection) plus the owner share.
- * @returns the overlay tree (null when there is nothing to show).
- */
-export function CostOverlaySlot(props: CostOverlaySlotProps) {
-  const [now, setNow] = useState(() => Date.now())
-  const [expanded, setExpanded] = useState(false)
-  const [recomputeState, setRecomputeState] = useState<'idle' | 'busy' | 'done' | 'failed'>('idle')
-  const [pos, setPos] = useState<OverlayPos | null>(() => readSavedPos())
-  const [dragging, setDragging] = useState(false)
-
-  // Live drag session: pointer id, press origin, seat origin, and the moved flag.
-  const dragRef = useRef<{
-    pointerId: number
-    startX: number
-    startY: number
-    originX: number
-    originY: number
-    moved: boolean
-  } | null>(null)
-  // Consumed by onClick to keep a drag from toggling the panel.
-  const suppressClickRef = useRef(false)
-  const barRef = useRef<HTMLDivElement | null>(null)
-
-  // The period ticker: peak/valley unit prices flip at the hour boundary.
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), TICK_MS)
-    return () => clearInterval(timer)
-  }, [])
-
-  const raw = props.useProjection(COST_PROJECTION_KEY)
-  const value = typeof raw === 'object' && raw !== null ? raw as DeepseekCostProjection : undefined
-
-  const view = useMemo(() => {
-    if (value === undefined || !value.supported) return null
-    const model = value.current.model
-    const entry = model === null ? undefined : value.table[model]
-    if (model === null || entry === undefined) return { model, period: undefined, unit: null, value }
-    const windows = value.peakWindows.map(pair => [pair[0] ?? 0, pair[1] ?? 0] as const)
-    const period = periodOf(model, new Date(now), value.table, value.switchAt, windows)
-    const unit = period === undefined ? null : entry[period]
-    return { model, period, unit, value }
-  }, [value, now])
-
-  if (view === null) return null
-  const { model, period, unit, value: data } = view
-
-  const onBarPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (event.button !== 0) return
-    const width = barRef.current?.offsetWidth ?? 0
-    const seat = pos ?? defaultSeat(width)
-    dragRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      originX: seat.x,
-      originY: seat.y,
-      moved: false,
-    }
-    setDragging(true)
-    event.currentTarget.setPointerCapture(event.pointerId)
-    event.preventDefault()
-  }
-
-  const onBarPointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    const drag = dragRef.current
-    if (drag === null || event.pointerId !== drag.pointerId) return
-    const dx = event.clientX - drag.startX
-    const dy = event.clientY - drag.startY
-    if (!drag.moved && Math.abs(dx) + Math.abs(dy) > DRAG_THRESHOLD_PX) drag.moved = true
-    if (!drag.moved) return
-    const maxX = Math.max(EDGE_INSET_PX, window.innerWidth - EDGE_INSET_PX)
-    const maxY = Math.max(EDGE_INSET_PX, window.innerHeight - EDGE_INSET_PX)
-    setPos({
-      x: Math.min(Math.max(EDGE_INSET_PX, drag.originX + dx), maxX),
-      y: Math.min(Math.max(EDGE_INSET_PX, drag.originY + dy), maxY),
-    })
-  }
-
-  const onBarPointerUp = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    const drag = dragRef.current
-    if (drag === null || event.pointerId !== drag.pointerId) return
-    dragRef.current = null
-    setDragging(false)
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
-    if (drag.moved) {
-      // The drag ended; persist the last position. Read it from state via a
-      // functional update so the saved value matches what was rendered.
-      suppressClickRef.current = true
-      setPos(previous => {
-        if (previous !== null) {
-          try {
-            localStorage.setItem(POS_KEY, JSON.stringify(previous))
-          } catch {
-            // Storage unavailable: the position just stays in-memory.
-          }
-        }
-        return previous
-      })
-    }
-  }
-
-  const onBarClick = (): void => {
-    if (suppressClickRef.current) {
-      suppressClickRef.current = false
-      return
-    }
-    setExpanded(prev => !prev)
-  }
-
-  const containerStyle: CSSProperties = pos === null
-    ? OVERLAY_STYLE
-    : { ...OVERLAY_STYLE, top: `${pos.y}px`, left: `${pos.x}px`, transform: 'none' }
-
-  const runRecompute = async (): Promise<void> => {
-    setRecomputeState('busy')
+export function CostOverlayApp({ initialLocale = 'zh' }: { initialLocale?: Locale }) {
+  const [snap, setSnap] = useState<CostSnapshot>(() => {
+    return window.__DSH_COST_BRIDGE__?.getSnapshot() ?? EMPTY_SNAPSHOT;
+  });
+  const [expanded, setExpanded] = useState<boolean>(() => {
     try {
-      const response = await fetch(RECOMPUTE_PATH, { method: 'POST' })
-      setRecomputeState(response.ok ? 'done' : 'failed')
+      return localStorage.getItem(STORAGE_EXPANDED_KEY) === '1';
     } catch {
-      setRecomputeState('failed')
+      return false;
     }
-    window.setTimeout(() => setRecomputeState('idle'), RECOMPUTED_MS)
-  }
+  });
+  const [locale, setLocale] = useState<Locale>(initialLocale);
+  const [copiedReport, setCopiedReport] = useState<boolean>(false);
+  const [pos] = useState<CornerPos>(loadSavedPos);
 
-  const t: Record<CostKey, string> = ZH_DICT
+  useEffect(() => {
+    const bridge = window.__DSH_COST_BRIDGE__;
+    if (!bridge) return;
+    const current = bridge.getSnapshot();
+    if (current) setSnap(current);
+    return bridge.subscribe((next) => setSnap({ ...next }));
+  }, []);
+
+  const toggleExpanded = useCallback(() => {
+    setExpanded((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(STORAGE_EXPANDED_KEY, next ? '1' : '0');
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+
+  const handleReset = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    window.__DSH_COST_BRIDGE__?.reset();
+  }, []);
+
+  const handleCopyReport = useCallback(
+    async (e: React.MouseEvent) => {
+      e.stopPropagation();
+      try {
+        const md = exportCostMarkdown(snap);
+        await navigator.clipboard.writeText(md);
+        setCopiedReport(true);
+        setTimeout(() => setCopiedReport(false), 1800);
+      } catch {
+        // ignore clipboard permission errors
+      }
+    },
+    [snap],
+  );
+
+  const toggleLocale = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setLocale((prev) => (prev === 'zh' ? 'en' : 'zh'));
+  }, []);
+
+  const t = getTranslations(locale);
+  const util = budgetUtilizationOf(snap);
+  const hitRate = cacheHitRateOf(snap);
+  const cacheSaved = cacheSavingsOf(snap);
+
+  // Status indicator color based on budget utilization
+  const statusColor =
+    util >= 1
+      ? '#ef4444' // red-500: over budget
+      : util >= snap.warnThreshold
+        ? '#f59e0b' // amber-500: approaching budget
+        : '#10b981'; // emerald-500: healthy
+
+  const recentTurns: TurnUsage[] = snap.turns.slice(-6).reverse();
+  const modelEntries = Object.values(snap.byModel);
 
   return (
-    <div style={containerStyle}>
+    <div
+      style={{
+        position: 'fixed',
+        right: `${pos.right}px`,
+        top: `${pos.top}px`,
+        zIndex: 2147483640,
+        fontFamily:
+          'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+        fontSize: '12px',
+        lineHeight: 1.4,
+        color: '#e5e7eb',
+        userSelect: 'none',
+        pointerEvents: 'auto',
+      }}
+    >
+      {/* Collapsed / Header Pill */}
       <div
-        ref={barRef}
-        role="button"
-        aria-expanded={expanded}
-        title={t['overlay.dragHint']}
+        onClick={toggleExpanded}
+        title={expanded ? t['overlay.pill.Collapse'] : t['overlay.pill.Expand']}
         style={{
-          ...BAR_STYLE,
-          cursor: dragging ? 'grabbing' : 'grab',
-          touchAction: 'none',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '8px',
+          padding: '5px 11px',
+          borderRadius: expanded ? '10px 10px 0 0' : '9999px',
+          background: 'rgba(17, 24, 39, 0.88)',
+          backdropFilter: 'blur(10px)',
+          WebkitBackdropFilter: 'blur(10px)',
+          border: '1px solid rgba(255, 255, 255, 0.12)',
+          boxShadow: '0 4px 16px rgba(0, 0, 0, 0.35)',
+          cursor: 'pointer',
+          transition: 'all 120ms ease',
         }}
-        onPointerDown={onBarPointerDown}
-        onPointerMove={onBarPointerMove}
-        onPointerUp={onBarPointerUp}
-        onClick={onBarClick}
       >
-        {period !== undefined && (
-          <span style={PERIOD_STYLE[period]}>{periodLabel(period, t)}</span>
-        )}
-        <span style={{ fontWeight: 600 }}>{model}</span>
-        {unit !== null && (
-          <span style={TEXT_SECONDARY}>
-            命中 ¥{formatUnit(unit.hit)} 未命中 ¥{formatUnit(unit.miss)} 输出 ¥{formatUnit(unit.out)} {t['overlay.perMillion']}
-          </span>
-        )}
-        <span style={{ fontWeight: 600, ...NUM }}>
-          {t['overlay.cost']} ¥{formatYuan(data.cost)}
+        {/* Budget status dot */}
+        <span
+          style={{
+            width: '7px',
+            height: '7px',
+            borderRadius: '50%',
+            backgroundColor: statusColor,
+            boxShadow: `0 0 6px ${statusColor}`,
+            flexShrink: 0,
+          }}
+        />
+
+        {/* Token Counter */}
+        <span style={{ fontWeight: 600, color: '#f9fafb' }}>
+          {formatTokens(snap.totalTokens)} tok
         </span>
-        {data.hitRate !== null && (
-          <span style={TEXT_TERTIARY}>
-            {t['overlay.hitRate']} {Math.round(data.hitRate * 100)}%
-          </span>
+
+        <span style={{ color: 'rgba(255,255,255,0.25)' }}>·</span>
+
+        {/* Yuan Cost */}
+        <span style={{ fontWeight: 600, color: statusColor }}>
+          ¥{formatYuan(snap.totalCostYuan)}
+        </span>
+
+        {/* Cache hit badge if active */}
+        {snap.totalPromptTokens > 0 && (
+          <>
+            <span style={{ color: 'rgba(255,255,255,0.25)' }}>·</span>
+            <span
+              style={{
+                fontSize: '11px',
+                color: '#60a5fa',
+                background: 'rgba(59, 130, 246, 0.14)',
+                padding: '1px 6px',
+                borderRadius: '999px',
+              }}
+            >
+              ⚡{Math.round(hitRate * 100)}%
+            </span>
+          </>
         )}
-        <span style={{ ...TEXT_TERTIARY, fontSize: '10px' }}>{expanded ? '▲' : '▼'}</span>
+
+        <span style={{ color: 'rgba(255,255,255,0.25)' }}>·</span>
+
+        {/* Turn counter */}
+        <span style={{ color: '#9ca3af', fontSize: '11px' }}>
+          {snap.turnCount} {t['overlay.pill.calls']}
+        </span>
+
+        {/* Caret */}
+        <span style={{ color: '#9ca3af', fontSize: '10px', marginLeft: '2px' }}>
+          {expanded ? '▴' : '▾'}
+        </span>
       </div>
 
+      {/* Expanded Detail Panel */}
       {expanded && (
-        <div style={{
-          marginTop: '6px',
-          width: '420px',
-          maxWidth: 'calc(100vw - 32px)',
-          borderRadius: '12px',
-          background: 'var(--dsw-alias-bg-overlay, rgba(24, 26, 32, 0.97))',
-          border: '1px solid var(--dsw-alias-border-l2, rgba(255, 255, 255, 0.14))',
-          boxShadow: '0 12px 40px rgba(0, 0, 0, 0.35)',
-          color: 'var(--dsw-alias-label-primary, #e8eaed)',
-          fontSize: '12px',
-          lineHeight: '20px',
-          padding: '14px 16px',
-        }}>
-          <div style={{ fontWeight: 700, fontSize: '13px', marginBottom: '8px' }}>
-            {t['overlay.detail.title']}
-            {recomputeState === 'done' && <span style={{ color: 'var(--dsw-alias-state-success-primary, #34c77b)', marginLeft: '8px', fontWeight: 500 }}>{t['overlay.detail.recomputed']}</span>}
-            {recomputeState === 'failed' && <span style={{ color: 'var(--dsw-alias-state-error-primary, #ff5f57)', marginLeft: '8px', fontWeight: 500 }}>{t['overlay.detail.recomputeFailed']}</span>}
-          </div>
-
-          <Row label={t['overlay.model']} value={model ?? '-'} />
-          <Row label={t['overlay.period']} value={periodLabel(period, t)} />
-
-          <SectionTitle>{t['overlay.detail.usage']}</SectionTitle>
-          <Row label={t['overlay.detail.uncached']} value={`${formatTokens(data.totals.uncached)} tok`} />
-          <Row label={t['overlay.detail.cacheRead']} value={`${formatTokens(data.totals.read)} tok`} />
-          <Row label={t['overlay.detail.output']} value={`${formatTokens(data.totals.out)} tok`} />
-          <Row label={t['overlay.hitRate']} value={data.hitRate === null ? '-' : `${Math.round(data.hitRate * 100)}%`} />
-          <Row label={t['overlay.cost']} value={`¥${formatYuan(data.cost)}`} strong />
-
-          {data.byModel.length > 1 && (
-            <>
-              <SectionTitle>{t['overlay.detail.byModel']}</SectionTitle>
-              {data.byModel.map(row => (
-                <Row
-                  key={row.model}
-                  label={`${row.model}（${formatTokens(row.uncached + row.read)} in / ${formatTokens(row.out)} out）`}
-                  value={`¥${formatYuan(row.cost)}`}
-                />
-              ))}
-            </>
-          )}
-
-          <SectionTitle>{t['overlay.detail.table']}</SectionTitle>
-          <table style={{ width: '100%', borderCollapse: 'collapse', ...NUM }}>
-            <thead>
-              <tr style={TEXT_TERTIARY}>
-                <th style={thStyle}>{t['overlay.model']} / {t['overlay.period']}</th>
-                <th style={thStyle}>{t['overlay.hit']}</th>
-                <th style={thStyle}>{t['overlay.miss']}</th>
-                <th style={thStyle}>{t['overlay.out']}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(data.table).map(([modelId, entry]) => (
-                <TableRows key={modelId} modelId={modelId} entry={entry} t={t} />
-              ))}
-            </tbody>
-          </table>
-          <div style={{ ...TEXT_TERTIARY, marginTop: '8px' }}>
-            {t['overlay.detail.periodFlat']} · {t['overlay.detail.periodPeak']} · {t['overlay.detail.periodOffpeak']}
-          </div>
-          <div style={{ ...TEXT_TERTIARY, marginTop: '4px' }}>
-            {t['overlay.detail.source']}。{t['overlay.detail.switchNote']}。
-          </div>
-
-          <div style={{ marginTop: '10px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <div
+          style={{
+            width: '300px',
+            background: 'rgba(17, 24, 39, 0.94)',
+            backdropFilter: 'blur(14px)',
+            WebkitBackdropFilter: 'blur(14px)',
+            border: '1px solid rgba(255, 255, 255, 0.12)',
+            borderTop: 'none',
+            borderRadius: '0 0 10px 10px',
+            padding: '10px 12px',
+            boxShadow: '0 10px 28px rgba(0, 0, 0, 0.45)',
+          }}
+        >
+          {/* Section Header */}
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '8px',
+              paddingBottom: '6px',
+              borderBottom: '1px solid rgba(255,255,255,0.08)',
+            }}
+          >
+            <span style={{ fontWeight: 600, color: '#f3f4f6' }}>
+              {t['overlay.detail.sessionUsage']}
+            </span>
             <button
-              type="button"
-              disabled={recomputeState === 'busy'}
-              onClick={() => void runRecompute()}
+              onClick={toggleLocale}
               style={{
-                padding: '4px 12px',
-                borderRadius: '6px',
-                border: '1px solid var(--dsw-alias-border-l2, rgba(255,255,255,0.16))',
-                background: 'var(--dsw-alias-button-primary-fill, rgba(76,130,255,0.9))',
-                color: 'var(--dsw-alias-label-primary-foreground, #fff)',
-                fontSize: '12px',
+                background: 'rgba(255,255,255,0.08)',
+                border: 'none',
+                color: '#d1d5db',
+                borderRadius: '4px',
+                padding: '1px 6px',
+                fontSize: '10px',
                 cursor: 'pointer',
               }}
             >
-              {recomputeState === 'busy' ? '…' : t['overlay.detail.recompute']}
+              {locale === 'zh' ? 'EN' : '中文'}
             </button>
-            {pos !== null && (
-              <button
-                type="button"
-                onClick={() => {
-                  setPos(null)
-                  try {
-                    localStorage.removeItem(POS_KEY)
-                  } catch {
-                    // Storage unavailable: resetting in-memory is enough.
-                  }
-                }}
+          </div>
+
+          {/* Token & Cost Breakdown Grid */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr auto',
+              rowGap: '4px',
+              fontSize: '11.5px',
+              marginBottom: '10px',
+            }}
+          >
+            <Row label={t['overlay.detail.totalTokens']} value={snap.totalTokens.toLocaleString()} />
+            <Row
+              label={t['overlay.detail.prompt']}
+              value={`${snap.totalPromptTokens.toLocaleString()} (${Math.round(hitRate * 100)}% ${t['overlay.turn.cached']})`}
+            />
+            <Row
+              label={t['overlay.detail.completion']}
+              value={snap.totalCompletionTokens.toLocaleString()}
+            />
+            <Row
+              label={t['overlay.detail.cacheSaved']}
+              value={`¥${formatYuan(cacheSaved)}`}
+              highlight="#34d399"
+            />
+            <Row
+              label={t['overlay.detail.cost']}
+              value={`¥${formatYuan(snap.totalCostYuan)}`}
+              highlight={statusColor}
+            />
+          </div>
+
+          {/* Budget Progress Bar */}
+          {snap.budgetYuan > 0 && (
+            <div style={{ marginBottom: '10px' }}>
+              <div
                 style={{
-                  padding: '4px 12px',
-                  borderRadius: '6px',
-                  border: '1px solid var(--dsw-alias-border-l2, rgba(255,255,255,0.16))',
-                  background: 'transparent',
-                  color: 'var(--dsw-alias-label-secondary, #9aa0ac)',
-                  fontSize: '12px',
-                  cursor: 'pointer',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: '11px',
+                  color: '#9ca3af',
+                  marginBottom: '3px',
                 }}
               >
-                {t['overlay.detail.resetPos']}
-              </button>
+                <span>
+                  {t['overlay.detail.budget']}: ¥{snap.budgetYuan.toFixed(2)}
+                </span>
+                <span style={{ color: statusColor }}>
+                  {util >= 1
+                    ? `${t['overlay.detail.budgetExceeded']} ¥${formatYuan(snap.totalCostYuan - snap.budgetYuan)}`
+                    : `${t['overlay.detail.budgetRemaining']} ¥${formatYuan(Math.max(0, snap.budgetYuan - snap.totalCostYuan))}`}
+                </span>
+              </div>
+              <div
+                style={{
+                  height: '5px',
+                  width: '100%',
+                  background: 'rgba(255,255,255,0.1)',
+                  borderRadius: '999px',
+                  overflow: 'hidden',
+                }}
+              >
+                <div
+                  style={{
+                    height: '100%',
+                    width: `${Math.min(100, Math.round(util * 100))}%`,
+                    background: statusColor,
+                    transition: 'width 200ms ease',
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Per-Model Aggregation */}
+          {modelEntries.length > 0 && (
+            <div style={{ marginBottom: '10px' }}>
+              <div
+                style={{
+                  fontSize: '10.5px',
+                  color: '#9ca3af',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.04em',
+                  marginBottom: '4px',
+                }}
+              >
+                {t['overlay.detail.byModel']}
+              </div>
+              {modelEntries.map((m) => (
+                <div
+                  key={m.model}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    fontSize: '11px',
+                    padding: '2px 0',
+                  }}
+                >
+                  <span style={{ color: '#d1d5db' }}>
+                    {m.model} <span style={{ color: '#6b7280' }}>({m.turns})</span>
+                  </span>
+                  <span style={{ color: '#f3f4f6' }}>
+                    {formatTokens(m.promptTokens + m.completionTokens)} · ¥{formatYuan(m.costYuan)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Recent Turns List */}
+          <div style={{ marginBottom: '10px' }}>
+            <div
+              style={{
+                fontSize: '10.5px',
+                color: '#9ca3af',
+                textTransform: 'uppercase',
+                letterSpacing: '0.04em',
+                marginBottom: '4px',
+              }}
+            >
+              {t['overlay.detail.recentTurns']}
+            </div>
+            {recentTurns.length === 0 ? (
+              <div style={{ color: '#6b7280', fontSize: '11px', fontStyle: 'italic' }}>
+                {t['overlay.detail.noCalls']}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                {recentTurns.map((turn) => (
+                  <div
+                    key={turn.turnIndex}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      fontSize: '11px',
+                      background: 'rgba(255,255,255,0.04)',
+                      padding: '3px 6px',
+                      borderRadius: '4px',
+                    }}
+                  >
+                    <span style={{ color: '#9ca3af' }}>
+                      #{turn.turnIndex} {turn.model}
+                    </span>
+                    <span>
+                      {formatTokens(turn.totalTokens)} ·{' '}
+                      <span style={{ color: '#10b981' }}>¥{formatYuan(turn.costYuan)}</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
             )}
+          </div>
+
+          {/* Footer Actions */}
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              gap: '6px',
+              paddingTop: '6px',
+              borderTop: '1px solid rgba(255,255,255,0.08)',
+            }}
+          >
+            <button
+              onClick={handleReset}
+              style={{
+                background: 'rgba(239, 68, 68, 0.14)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                color: '#fca5a5',
+                borderRadius: '5px',
+                padding: '3px 8px',
+                fontSize: '11px',
+                cursor: 'pointer',
+              }}
+            >
+              {t['overlay.detail.reset']}
+            </button>
+            <button
+              onClick={handleCopyReport}
+              style={{
+                background: 'rgba(16, 185, 129, 0.14)',
+                border: '1px solid rgba(16, 185, 129, 0.3)',
+                color: '#6ee7b7',
+                borderRadius: '5px',
+                padding: '3px 8px',
+                fontSize: '11px',
+                cursor: 'pointer',
+              }}
+            >
+              {copiedReport ? t['overlay.detail.copiedReport'] : t['overlay.detail.copyReport']}
+            </button>
+            <button
+              onClick={toggleExpanded}
+              style={{
+                background: 'rgba(255, 255, 255, 0.08)',
+                border: '1px solid rgba(255, 255, 255, 0.14)',
+                color: '#e5e7eb',
+                borderRadius: '5px',
+                padding: '3px 8px',
+                fontSize: '11px',
+                cursor: 'pointer',
+              }}
+            >
+              {t['overlay.detail.close']}
+            </button>
           </div>
         </div>
       )}
     </div>
-  )
+  );
 }
 
-const thStyle: CSSProperties = { textAlign: 'right', fontWeight: 500, padding: '2px 6px' }
-
-/** One model's three price rows inside the table. */
-function TableRows(props: {
-  modelId: string
-  entry: { flat: { hit: number; miss: number; out: number }; peak: { hit: number; miss: number; out: number }; offpeak: { hit: number; miss: number; out: number } }
-  t: Record<CostKey, string>
+function Row({
+  label,
+  value,
+  highlight,
+}: {
+  label: string;
+  value: string;
+  highlight?: string;
 }) {
-  const { modelId, entry, t } = props
-  const rows: Array<{ label: string; cells: { hit: number; miss: number; out: number } }> = [
-    { label: `${modelId} · ${t['overlay.flat']}`, cells: entry.flat },
-    { label: `${modelId} · ${t['overlay.peak']}`, cells: entry.peak },
-    { label: `${modelId} · ${t['overlay.offpeak']}`, cells: entry.offpeak },
-  ]
   return (
     <>
-      {rows.map(row => (
-        <tr key={row.label}>
-          <td style={tdStyle}>{row.label}</td>
-          <td style={tdNum}>{formatUnit(row.cells.hit)}</td>
-          <td style={tdNum}>{formatUnit(row.cells.miss)}</td>
-          <td style={tdNum}>{formatUnit(row.cells.out)}</td>
-        </tr>
-      ))}
+      <span style={{ color: '#9ca3af' }}>{label}</span>
+      <span style={{ fontWeight: 600, color: highlight ?? '#f3f4f6', textAlign: 'right' }}>
+        {value}
+      </span>
     </>
-  )
-}
-
-const tdStyle: CSSProperties = { textAlign: 'left', padding: '2px 6px' }
-const tdNum: CSSProperties = { textAlign: 'right', padding: '2px 6px', fontVariantNumeric: 'tabular-nums' }
-
-/** One key/value row inside the detail panel. */
-function Row({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px' }}>
-      <span style={TEXT_SECONDARY}>{label}</span>
-      <span style={strong ? { fontWeight: 700, ...NUM } : NUM}>{value}</span>
-    </div>
-  )
-}
-
-/** A section divider label. */
-function SectionTitle({ children }: { children: ReactNode }) {
-  return (
-    <div style={{
-      margin: '10px 0 4px',
-      fontSize: '11px',
-      fontWeight: 600,
-      letterSpacing: '0.04em',
-      color: 'var(--dsw-alias-label-tertiary, #6b7280)',
-      borderTop: '1px solid var(--dsw-alias-border-l1, rgba(255,255,255,0.08))',
-      paddingTop: '8px',
-    }}>
-      {children}
-    </div>
-  )
-}
-
-/**
- * Register the overlay into the session header's additive utilities seat.
- * @param ctx - client root context (slots).
- * @returns disposer removing the overlay entry.
- */
-export function mountOverlay(ctx: ClientContext): () => void {
-  return ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
-    name: 'conversation.session.header.utilities',
-    id: 'cost-overlay',
-    order: 10,
-  }, CostOverlaySlot))
+  );
 }

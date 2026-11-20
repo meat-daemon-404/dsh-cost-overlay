@@ -1,111 +1,83 @@
-/**
- * Locale dictionaries for the dsh-cost-overlay browser half.
- * `zh` is the key source; `en` carries a complete key set.
- */
+export type Locale = 'zh' | 'en';
 
-/** Simplified Chinese dictionary (the key-set source of truth). */
-export const zh = {
-  'overlay.peak': '高峰',
-  'overlay.offpeak': '空闲',
-  'overlay.flat': '平峰',
-  'overlay.hit': '命中',
-  'overlay.miss': '未命中',
-  'overlay.out': '输出',
-  'overlay.perMillion': '元/百万',
-  'overlay.cost': '累计',
-  'overlay.hitRate': '命中率',
-  'overlay.model': '模型',
-  'overlay.period': '时段',
-  'overlay.dragHint': '拖动可移动位置，点击展开详情',
-  'overlay.detail.title': 'DeepSeek 费用详情',
-  'overlay.detail.usage': '本会话用量',
-  'overlay.detail.uncached': '输入（未命中）',
-  'overlay.detail.cacheRead': '输入（命中）',
-  'overlay.detail.output': '输出',
-  'overlay.detail.byModel': '按模型分账',
-  'overlay.detail.table': '价格表（元/百万 token）',
-  'overlay.detail.periodFlat': '平峰（2026-08-17 前）',
-  'overlay.detail.periodPeak': '高峰（北京 9-12 点、14-18 点）',
-  'overlay.detail.periodOffpeak': '空闲（其余时段，高峰价一半）',
-  'overlay.detail.recompute': '重新计算',
-  'overlay.detail.recomputed': '已重新计算',
-  'overlay.detail.recomputeFailed': '重新计算失败',
-  'overlay.detail.resetPos': '恢复顶部居中',
-  'overlay.detail.source': '价格来源：DeepSeek 官网价格页（2026-08-16 采集）',
-  'overlay.detail.switchNote': '2026-08-17 00:00（北京时间）起按峰谷计价，自动切换',
-  'settings.title': 'DeepSeek 费用悬浮条',
-  'settings.description': '顶部悬浮条显示当前模型单价与本会话累计花费。价格基于官网价格表，可在此覆盖。',
-  'settings.enabled': '启用',
-  'settings.enabledHint': '关闭后悬浮条与费用统计全部隐藏',
-  'settings.on': '开',
-  'settings.off': '关',
-  'settings.overridden': '已覆盖',
-  'settings.reset': '恢复默认',
-  'settings.invalidNumber': '请输入有效数字',
-  'settings.group.flat': '平峰价格（2026-08-17 前生效）',
-  'settings.group.peak': '高峰价格（2026-08-17 起）',
-  'settings.group.offpeak': '空闲价格（2026-08-17 起，高峰一半）',
-  'settings.cell.hit': '缓存命中输入',
-  'settings.cell.miss': '缓存未命中输入',
-  'settings.cell.out': '输出',
-  'settings.fieldsHint': '留空使用官方默认价格；保存后本会话累计花费自动按新价格重新计算。',
-  'settings.save': '保存',
-  'settings.discard': '放弃',
-  'settings.saving': '保存中…',
-  'settings.failed': '保存失败',
-} satisfies Record<string, string>
+export interface Translations {
+  'overlay.pill.calls': string;
+  'overlay.pill.Collapse': string;
+  'overlay.pill.Expand': string;
+  'overlay.detail.sessionUsage': string;
+  'overlay.detail.totalTokens': string;
+  'overlay.detail.prompt': string;
+  'overlay.detail.completion': string;
+  'overlay.detail.cacheHit': string;
+  'overlay.detail.cacheSaved': string;
+  'overlay.detail.cost': string;
+  'overlay.detail.turns': string;
+  'overlay.detail.budget': string;
+  'overlay.detail.budgetRemaining': string;
+  'overlay.detail.budgetExceeded': string;
+  'overlay.detail.recentTurns': string;
+  'overlay.detail.byModel': string;
+  'overlay.detail.noCalls': string;
+  'overlay.detail.reset': string;
+  'overlay.detail.copyReport': string;
+  'overlay.detail.copiedReport': string;
+  'overlay.detail.minimize': string;
+  'overlay.detail.close': string;
+  'overlay.turn.cached': string;
+}
 
-/** The dsh-cost-overlay key union. */
-export type CostKey = keyof typeof zh
+const zh: Translations = {
+  'overlay.pill.calls': '次',
+  'overlay.pill.Collapse': '收起用量详情',
+  'overlay.pill.Expand': '展开用量详情',
+  'overlay.detail.sessionUsage': '本次会话用量',
+  'overlay.detail.totalTokens': '总 Token',
+  'overlay.detail.prompt': '输入 (Prompt)',
+  'overlay.detail.completion': '输出 (Completion)',
+  'overlay.detail.cacheHit': '缓存命中率',
+  'overlay.detail.cacheSaved': '缓存已省',
+  'overlay.detail.cost': '预估花费',
+  'overlay.detail.turns': '对话轮次',
+  'overlay.detail.budget': '会话预算',
+  'overlay.detail.budgetRemaining': '剩余',
+  'overlay.detail.budgetExceeded': '已超支',
+  'overlay.detail.recentTurns': '最近轮次明细',
+  'overlay.detail.byModel': '按模型统计',
+  'overlay.detail.noCalls': '等待第一次模型调用…',
+  'overlay.detail.reset': '重置会话计数',
+  'overlay.detail.copyReport': '复制费用报告',
+  'overlay.detail.copiedReport': '已复制报告 ✓',
+  'overlay.detail.minimize': '最小化为胶囊',
+  'overlay.detail.close': '收起',
+  'overlay.turn.cached': '缓存',
+};
 
-/** English dictionary, checked complete against the zh key set. */
-export const en = {
-  'overlay.peak': 'Peak',
-  'overlay.offpeak': 'Idle',
-  'overlay.flat': 'Flat',
-  'overlay.hit': 'hit',
-  'overlay.miss': 'miss',
-  'overlay.out': 'out',
-  'overlay.perMillion': 'CNY/1M',
-  'overlay.cost': 'Total',
-  'overlay.hitRate': 'hit rate',
-  'overlay.model': 'Model',
-  'overlay.period': 'Period',
-  'overlay.dragHint': 'Drag to move; click to expand',
-  'overlay.detail.title': 'DeepSeek cost detail',
-  'overlay.detail.usage': 'Session usage',
-  'overlay.detail.uncached': 'Input (uncached)',
-  'overlay.detail.cacheRead': 'Input (cache hit)',
-  'overlay.detail.output': 'Output',
-  'overlay.detail.byModel': 'Per-model breakdown',
-  'overlay.detail.table': 'Price table (CNY per 1M tokens)',
-  'overlay.detail.periodFlat': 'Flat (before 2026-08-17)',
-  'overlay.detail.periodPeak': 'Peak (9-12, 14-18 Beijing)',
-  'overlay.detail.periodOffpeak': 'Idle (other hours, half of peak)',
-  'overlay.detail.recompute': 'Recompute',
-  'overlay.detail.recomputed': 'Recomputed',
-  'overlay.detail.recomputeFailed': 'Recompute failed',
-  'overlay.detail.resetPos': 'Reset to top center',
-  'overlay.detail.source': 'Prices from the DeepSeek pricing page (captured 2026-08-16)',
-  'overlay.detail.switchNote': 'Peak/valley pricing applies from 2026-08-17 00:00 Beijing time (auto-switched)',
-  'settings.title': 'DeepSeek cost overlay',
-  'settings.description': 'A top-center floating bar showing the current model unit prices and this session\'s accumulated cost, computed from real token usage.',
-  'settings.enabled': 'Enabled',
-  'settings.enabledHint': 'Turns off the overlay and all cost tracking',
-  'settings.on': 'On',
-  'settings.off': 'Off',
-  'settings.overridden': 'Overridden',
-  'settings.reset': 'Reset',
-  'settings.invalidNumber': 'Enter a valid number',
-  'settings.group.flat': 'Flat prices (in effect before 2026-08-17)',
-  'settings.group.peak': 'Peak prices (from 2026-08-17)',
-  'settings.group.offpeak': 'Idle prices (from 2026-08-17, half of peak)',
-  'settings.cell.hit': 'Cache-hit input',
-  'settings.cell.miss': 'Cache-miss input',
-  'settings.cell.out': 'Output',
-  'settings.fieldsHint': 'Leave blank to use the official defaults; saving re-derives the session cost automatically.',
-  'settings.save': 'Save',
-  'settings.discard': 'Discard',
-  'settings.saving': 'Saving…',
-  'settings.failed': 'Save failed',
-} satisfies Record<CostKey, string>
+const en: Translations = {
+  'overlay.pill.calls': 'calls',
+  'overlay.pill.Collapse': 'Collapse usage details',
+  'overlay.pill.Expand': 'Expand usage details',
+  'overlay.detail.sessionUsage': 'Session Usage',
+  'overlay.detail.totalTokens': 'Total Tokens',
+  'overlay.detail.prompt': 'Prompt',
+  'overlay.detail.completion': 'Completion',
+  'overlay.detail.cacheHit': 'Cache hit rate',
+  'overlay.detail.cacheSaved': 'Cache saved',
+  'overlay.detail.cost': 'Est. cost',
+  'overlay.detail.turns': 'Turns',
+  'overlay.detail.budget': 'Session budget',
+  'overlay.detail.budgetRemaining': 'left',
+  'overlay.detail.budgetExceeded': 'exceeded',
+  'overlay.detail.recentTurns': 'Recent turns',
+  'overlay.detail.byModel': 'By model',
+  'overlay.detail.noCalls': 'Waiting for first LLM call…',
+  'overlay.detail.reset': 'Reset session counter',
+  'overlay.detail.copyReport': 'Copy cost report',
+  'overlay.detail.copiedReport': 'Report copied ✓',
+  'overlay.detail.minimize': 'Minimize to pill',
+  'overlay.detail.close': 'Collapse',
+  'overlay.turn.cached': 'cached',
+};
+
+export function getTranslations(locale: Locale = 'zh'): Translations {
+  return locale === 'en' ? en : zh;
+}

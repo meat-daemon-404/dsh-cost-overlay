@@ -1,26 +1,36 @@
 {
-  "name": "dsh-cost-overlay-marketplace",
-  "plugins": [
-    {
-      "name": "dsh-cost-overlay",
-      "source": "./",
-      "version": "0.2.0",
-      "displayName": "DeepSeek Cost Overlay",
-      "displayName_i18n": {
-        "zh-CN": "DeepSeek 费用悬浮条"
-      },
-      "description": "Draggable top-center DeepSeek API cost & cache-savings overlay for the DSH Web GUI with peak/off-peak pricing and per-model breakdown.",
-      "description_i18n": {
-        "zh-CN": "DSH Web GUI 可拖动顶部费用悬浮条：实时展示峰谷时段单价、缓存命中率、缓存省钱金额与按模型分账明细。"
-      },
-      "category": "developer-tools",
-      "keywords": [
-        "deepseek",
-        "dsh",
-        "dsh-plugin",
-        "cost-overlay",
-        "token-meter"
-      ]
+  "$schema": "https://deepseek-harness.dev/schemas/marketplace-v1.json",
+  "id": "dsh-cost-overlay",
+  "name": "DSH Token & Cost Overlay",
+  "displayName": "实时 Token 与花费悬浮窗 (Cost Overlay)",
+  "version": "0.2.1",
+  "publisher": "meat-daemon-404",
+  "repository": "https://github.com/meat-daemon-404/dsh-cost-overlay",
+  "license": "MIT",
+  "categories": ["observability", "cost-management", "ui-overlay"],
+  "summary": {
+    "zh": "在 DeepSeek Harness 右上角实时显示当前会话的 Token 消耗、上下文缓存命中率、已节省金额、人民币花费与预算预警，并支持一键复制 Markdown 费用报告。",
+    "en": "Live top-right pill overlay showing real-time token consumption, context cache hit rate, cache savings, RMB cost, budget alerts, and one-click Markdown cost report export for DeepSeek Harness."
+  },
+  "entry": "./dist/index.js",
+  "clientEntry": "./dist/client/overlay.js",
+  "slots": ["overlay:top-right", "status-bar:right"],
+  "configuration": {
+    "budgetYuan": {
+      "type": "number",
+      "default": 5.0,
+      "description": "Session cost budget threshold in CNY (¥). Set 0 to disable budget alerts."
+    },
+    "warnThreshold": {
+      "type": "number",
+      "default": 0.8,
+      "description": "Fraction of budgetYuan (0-1) at which the indicator turns amber."
+    },
+    "locale": {
+      "type": "string",
+      "enum": ["zh", "en"],
+      "default": "zh",
+      "description": "Display language for the overlay pill and detail popover."
     }
-  ]
+  }
 }
